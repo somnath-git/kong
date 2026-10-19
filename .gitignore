@@ -3,3 +3,14 @@
 
 # Node
 node_modules/
+
+# Personal Kong notes — kept locally, not pushed.
+kong.md
+kong-rate-limiting.md
+
+# Parked full DB/auth stack — kept locally only (contains dev-only keys), not pushed.
+_parked/
+
+# .NET build artifacts
+webapi/bin/
+webapi/obj/

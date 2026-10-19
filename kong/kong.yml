@@ -1,0 +1,30 @@
+# Kong DB-less declarative config.
+# Kong reads this file at startup — no Postgres, no migrations, no Admin API writes.
+#
+# One service -> the C# Web API container (reached by its compose service name "webapi").
+# One route   -> everything under /api is proxied to that service.
+_format_version: "3.0"
+
+services:
+  - name: webapi-service
+    url: http://webapi:8080
+    routes:
+      - name: webapi-route
+        paths:
+          - /api
+        # Strip /api off the path before forwarding, so:
+        #   GET localhost:8000/api/hello  ->  GET webapi:8080/hello
+        strip_path: true
+
+# --- Plugins ---
+plugins:
+  # IP-based rate limiting on the webapi-route.
+  #   limit_by: ip       -> count requests per client IP address
+  #   minute: 5          -> allow 5 requests per IP per minute, then 429
+  #   policy: local      -> keep counters in Kong's own memory (fine for single node / DB-less)
+  - name: rate-limiting
+    route: webapi-route
+    config:
+      hour: 5
+      limit_by: ip
+      policy: local
