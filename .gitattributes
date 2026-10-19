@@ -1,0 +1,5 @@
+# Keep LF for files consumed inside Linux containers / as PEM, regardless of host.
+*.sh text eol=lf
+*.sql text eol=lf
+keys/jwtRS256.key text eol=lf
+keys/jwtRS256.key.pub text eol=lf
