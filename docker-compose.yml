@@ -1,0 +1,150 @@
+# Kong JWT auth scaffold — single `docker compose up` brings the whole stack online.
+#
+# DEV-ONLY: passwords and the committed RS256 keypair are for local learning only.
+# Startup ordering is enforced via healthchecks + depends_on conditions:
+#   kong-database healthy -> kong-migrations complete -> kong healthy -> kong-bootstrap
+#   app-database  healthy -> auth-service
+#
+# Pinned images (no floating tags): kong:3.6, postgres:16-alpine,
+# mccutchen/go-httpbin:v2.15.0, curlimages/curl:8.10.1.
+
+services:
+  # --- Kong's own Postgres (DB mode) ---
+  kong-database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kong
+      POSTGRES_DB: kong
+      POSTGRES_PASSWORD: kongpass # DEV-ONLY
+    volumes:
+      - kong-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kong"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kong-net
+
+  # --- One-shot: bootstrap Kong's schema, then exit 0 ---
+  kong-migrations:
+    image: kong:3.6
+    command: kong migrations bootstrap
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kongpass # DEV-ONLY
+      KONG_PG_DATABASE: kong
+    depends_on:
+      kong-database:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - kong-net
+
+  # --- Kong Gateway ---
+  kong:
+    image: kong:3.6
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: kongpass # DEV-ONLY
+      KONG_PG_DATABASE: kong
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    ports:
+      - "8000:8000" # proxy
+      - "8001:8001" # Admin API
+      - "8443:8443" # proxy TLS
+    depends_on:
+      kong-migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "kong", "health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kong-net
+
+  # --- Application Postgres (owns the users table) ---
+  app-database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: appuser
+      POSTGRES_DB: appdb
+      POSTGRES_PASSWORD: apppass # DEV-ONLY
+    volumes:
+      - app-db-data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5433:5432" # host 5433 avoids clashing with kong-database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appuser -d appdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kong-net
+
+  # --- Auth / identity service (signs RS256 JWTs) ---
+  auth-service:
+    build: ./auth-service
+    environment:
+      DB_HOST: app-database
+      DB_PORT: "5432"
+      DB_USER: appuser
+      DB_PASSWORD: apppass # DEV-ONLY
+      DB_NAME: appdb
+      PORT: "3000"
+      JWT_ISSUER: auth-service
+      JWT_TTL: 1h
+      PRIVATE_KEY_PATH: /keys/jwtRS256.key
+    volumes:
+      - ./keys:/keys:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      app-database:
+        condition: service_healthy
+    networks:
+      - kong-net
+
+  # --- Protected upstream used to demo the jwt plugin ---
+  httpbin:
+    image: mccutchen/go-httpbin:v2.15.0
+    # go-httpbin's entrypoint is the binary itself; configure via env vars.
+    # Defaults are already 0.0.0.0:8080, set explicitly for clarity.
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8080"
+    networks:
+      - kong-net
+
+  # --- One-shot: configure Kong via the Admin API, then exit 0 ---
+  kong-bootstrap:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["sh", "/bootstrap.sh"]
+    volumes:
+      - ./kong/bootstrap.sh:/bootstrap.sh:ro
+      - ./keys:/keys:ro
+    depends_on:
+      kong:
+        condition: service_healthy
+      auth-service:
+        condition: service_started
+      httpbin:
+        condition: service_started
+    restart: "no"
+    networks:
+      - kong-net
+
+volumes:
+  kong-db-data:
+  app-db-data:
+
+networks:
+  kong-net:
+    driver: bridge
